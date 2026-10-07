@@ -1,3 +1,4 @@
+import AxeBuilder from '@axe-core/playwright';
 import { test, expect } from '@playwright/test';
 
 // Återanvänd sparad inloggningssession
@@ -157,3 +158,92 @@ test('BUG-07: Jobs visar ingen dummy-/testdata', async ({ page }) => {
   expect(text).not.toMatch(/test job|lorem ipsum|dolor sit amet|dummy|placeholder|mock/i);
   expect(text).not.toMatch(/\b(salary|lön)\b[^\n]{0,20}\b(0|999999+)\b/i);
 });
+
+test('BUG-06: Jobs-resurser (bilder, SVG, bilagor) laddar med HTTP 200', async ({ page }) => {
+  // Förväntat fel: minst en företagslogga (dealroom-images-production) ger 404 tills BUG-06 är åtgärdad.
+  test.fail();
+  await page.goto(`${BASE_URL}/jobs`);
+  await page.waitForLoadState('networkidle');
+
+  const jobLinks = await page.locator('a[href*="/jobs/"]').evaluateAll(
+    (as) => [...new Set(as.map((a) => (a as HTMLAnchorElement).href))].slice(0, 5)
+  );
+
+  const collect = () =>
+    page.evaluate(() => {
+      const urls: string[] = [];
+      document.querySelectorAll('img[src], source[src], video[src], object[data]').forEach((e) => {
+        const u = e.getAttribute('src') || e.getAttribute('data');
+        if (u && !u.startsWith('data:')) urls.push(new URL(u, location.href).href);
+      });
+      document.querySelectorAll('a[href]').forEach((a) => {
+        const h = (a as HTMLAnchorElement).href;
+        if (/\.(pdf|docx?|xlsx?|zip|png|jpe?g|svg)(\?|$)/i.test(h)) urls.push(h);
+      });
+      return urls;
+    });
+
+  const urls = new Set<string>(await collect());
+  for (const link of jobLinks) {
+    await page.goto(link);
+    await page.waitForLoadState('networkidle');
+    (await collect()).forEach((u) => urls.add(u));
+  }
+
+  const broken: string[] = [];
+  for (const u of urls) {
+    const res = await page.request.get(u).catch(() => null);
+    if (!res || res.status() !== 200) broken.push(`${res?.status() ?? 'ERR'} ${u}`);
+  }
+  console.log(`BUG-06: kontrollerade ${urls.size} resurser, trasiga: ${broken.length}`, broken);
+  expect(broken, `Trasiga resurser:\n${broken.join('\n')}`).toEqual([]);
+});
+
+test('BUG-09/11: Profilens klientvalidering stoppar ogiltiga värden', async ({ page }) => {
+  await page.goto(`${BASE_URL}/profile`);
+  await page.waitForLoadState('domcontentloaded');
+
+  await page.getByRole('button', { name: /Preferences/i }).click();
+  const rate = page.getByRole('spinbutton', { name: /Freelancing hourly rate/i });
+  await expect(rate).toBeVisible({ timeout: 5000 });
+
+  for (const bad of ['-5', '999999999']) {
+    await rate.fill(bad);
+    await page.getByRole('button', { name: 'Save' }).click();
+    await page.waitForTimeout(1000);
+    const invalid = await rate.evaluate((el: HTMLInputElement) => !el.checkValidity());
+    const warning = await page
+      .getByText(/invalid|must be|too (high|large)|required|between|at least|not valid/i)
+      .first()
+      .isVisible()
+      .catch(() => false);
+    expect(invalid || warning, `Ingen validering för timarvode "${bad}"`).toBeTruthy();
+  }
+
+  await page.getByRole('button', { name: /Personal Details/i }).click();
+  const fmt = page.locator('input[type="email"], input[type="url"], input[name*="linkedin" i], input[name*="github" i]');
+  const n = await fmt.count();
+  for (let i = 0; i < n; i++) {
+    const el = fmt.nth(i);
+    if (!(await el.isVisible()) || !(await el.isEditable())) continue;
+    await el.fill('not a valid value');
+    const type = await el.getAttribute('type');
+    const invalid = await el.evaluate((e: HTMLInputElement) => !e.checkValidity());
+    if (type === 'email' || type === 'url') expect(invalid).toBeTruthy();
+  }
+});
+
+for (const route of ['/jobs', '/community', '/profile']) {
+  test(`BUG-12/15/19: Axe-layoutgranskning ${route}`, async ({ page }) => {
+  // Förväntat fel: <svg role="img"> saknar alternativ text (svg-img-alt) tills BUG-12/15/19 är åtgärdade.
+  test.fail();
+    await page.goto(`${BASE_URL}${route}`);
+    await page.waitForLoadState('networkidle');
+    const results = await new AxeBuilder({ page })
+      .withRules(['color-contrast', 'heading-order', 'page-has-heading-one', 'empty-heading', 'image-alt', 'svg-img-alt'])
+      .analyze();
+    const summary = results.violations.map((v) => `${v.id} (${v.impact}) x${v.nodes.length}: ${v.help}`);
+    console.log(`AXE ${route}:\n${summary.join('\n') || 'inga överträdelser'}`);
+    expect(summary, summary.join('\n')).toEqual([]);
+  });
+}
