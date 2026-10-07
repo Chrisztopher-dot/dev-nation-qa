@@ -86,4 +86,24 @@ test.describe('dev.nation.dev - Kritiska QA Tester', () => {
     }
   });
 
+  test('BUG-10: Datum efter idag kan inte väljas som födelsedatum', async ({ page }) => {
+    await page.goto(`${BASE_URL}/profile`);
+    await page.waitForLoadState('domcontentloaded');
+
+    await page.getByRole('button', { name: /Personal Details/i }).click();
+
+    await page.getByRole('button', { name: 'Date of Birth' }).click();
+
+    const calendar = page.getByRole('dialog');
+    await expect(calendar).toBeVisible();
+    await calendar.getByRole('button', { name: 'Go to the Next Month' }).click();
+
+    const futureDates = calendar.getByRole('grid').getByRole('button');
+    const futureDateCount = await futureDates.count();
+    expect(futureDateCount).toBeGreaterThan(0);
+    for (const futureDate of await futureDates.all()) {
+      await expect(futureDate).toBeDisabled();
+    }
+  });
+
 });
