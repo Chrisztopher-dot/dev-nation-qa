@@ -293,3 +293,95 @@ for (const route of ['/jobs', '/community']) {
     expect.soft(mb, 'payload över 5MB').toBeLessThan(5);
   });
 }
+
+const MIME_RULES: Record<string, RegExp> = {
+  js: /^(application|text)\/(x-)?javascript/i,
+  mjs: /^(application|text)\/(x-)?javascript/i,
+  css: /^text\/css/i,
+  svg: /^image\/svg\+xml/i,
+  png: /^image\/png/i,
+  woff2: /^(font\/woff2|application\/(x-)?font-woff2)/i,
+  json: /^application\/(.+\+)?json/i,
+};
+
+for (const route of ['/jobs', '/community']) {
+  test(`BUG-16: Content-Type för statiska resurser ${route}`, async ({ page }) => {
+    const wrong: string[] = [];
+    let checked = 0;
+    page.on('response', (res) => {
+      if (res.status() >= 300 || res.request().method() !== 'GET') return;
+      const ext = new URL(res.url()).pathname.split('.').pop()?.toLowerCase() ?? '';
+      const rule = MIME_RULES[ext];
+      if (!rule) return;
+      checked++;
+      const ct = res.headers()['content-type'] || '(saknas)';
+      if (!rule.test(ct)) wrong.push(`${res.url()} -> ${ct}`);
+    });
+    await page.goto(`${BASE_URL}${route}`);
+    await page.waitForLoadState('networkidle');
+    console.log(`BUG-16 ${route}: ${checked} resurser kontrollerade, ${wrong.length} fel`);
+    expect(checked, 'inga statiska resurser hittades').toBeGreaterThan(0);
+    expect(wrong, wrong.join('\n')).toEqual([]);
+  });
+}
+
+test('BUG-17/18: Profil och arbetshistorik utan overflow eller klippta fält', async ({ page }) => {
+  await page.goto(`${BASE_URL}/profile`);
+  await page.waitForLoadState('networkidle');
+  for (const vp of [{ width: 1280, height: 800 }, { width: 390, height: 844 }]) {
+    await page.setViewportSize(vp);
+    await page.waitForTimeout(300);
+    const o = await page.evaluate(() => ({ sw: document.documentElement.scrollWidth, iw: window.innerWidth }));
+    expect(o.sw, `horisontell overflow vid ${vp.width}px: scrollWidth=${o.sw}`).toBeLessThanOrEqual(o.iw);
+
+    const bad = await page.evaluate(() => {
+      const out: string[] = [];
+      document.querySelectorAll('input:not([type=hidden]), textarea, select').forEach((el) => {
+        const r = el.getBoundingClientRect();
+        const s = getComputedStyle(el);
+        if (s.display === 'none' || s.visibility === 'hidden' || (r.width === 0 && r.height === 0)) return;
+        if (r.right > window.innerWidth + 1 || r.left < -1) out.push(`utanför viewport: ${el.outerHTML.slice(0, 80)}`);
+        const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+        if (cy < 0 || cy > window.innerHeight || cx < 0 || cx > window.innerWidth) return;
+        const top = document.elementFromPoint(cx, cy);
+        if (top && top !== el && !el.contains(top) && !top.contains(el) && !(el as HTMLInputElement).labels?.[0]?.contains(top)) {
+          out.push(`skymt av ${top.tagName}: ${el.outerHTML.slice(0, 80)}`);
+        }
+      });
+      return out;
+    });
+    expect(bad, bad.join('\n')).toEqual([]);
+  }
+});
+
+test('BUG-20: Jobbkort har synliga, icke-överlappande nyckelelement', async ({ page }) => {
+  await page.goto(`${BASE_URL}/jobs`);
+  await page.waitForLoadState('networkidle');
+  const card = page.locator('main article').first();
+  await expect(card).toBeVisible({ timeout: 15000 });
+  const vp = page.viewportSize()!;
+  const parts = [
+    { name: 'titel', loc: card.getByRole('heading').first().or(card.locator('h1,h2,h3,h4,[class*="title" i]').first()) },
+    { name: 'företag', loc: card.locator('[class*="company" i], [class*="org" i], img[alt]').first() },
+    { name: 'tagg', loc: card.locator('[class*="tag" i], [class*="chip" i], [class*="badge" i], [class*="skill" i]').first() },
+    { name: 'åtgärdsknapp', loc: card.getByRole('button').or(card.getByRole('link', { name: /apply|view|details|ansök/i })).first() },
+  ];
+  const boxes: { name: string; b: { x: number; y: number; width: number; height: number } }[] = [];
+  for (const p of parts) {
+    if ((await p.loc.count()) === 0) { console.log(`BUG-20: ${p.name} hittades inte i kortet`); continue; }
+    await expect(p.loc, `${p.name} ska vara synlig`).toBeVisible();
+    const b = (await p.loc.boundingBox())!;
+    expect(b.x, `${p.name} utanför vänster`).toBeGreaterThanOrEqual(-1);
+    expect(b.x + b.width, `${p.name} utanför höger`).toBeLessThanOrEqual(vp.width + 1);
+    boxes.push({ name: p.name, b });
+  }
+  expect(boxes.length, 'för få nyckelelement hittades').toBeGreaterThanOrEqual(2);
+  for (let i = 0; i < boxes.length; i++) for (let j = i + 1; j < boxes.length; j++) {
+    const a = boxes[i].b, c = boxes[j].b;
+    const ov = a.x < c.x + c.width - 1 && c.x < a.x + a.width - 1 && a.y < c.y + c.height - 1 && c.y < a.y + a.height - 1;
+    // Element som omsluter varandra (t.ex. länk runt titel) räknas inte som överlapp
+    const nested = (a.x <= c.x && a.y <= c.y && a.x + a.width >= c.x + c.width && a.y + a.height >= c.y + c.height) ||
+                   (c.x <= a.x && c.y <= a.y && c.x + c.width >= a.x + a.width && c.y + c.height >= a.y + a.height);
+    expect(ov && !nested, `${boxes[i].name} överlappar ${boxes[j].name}`).toBeFalsy();
+  }
+});
