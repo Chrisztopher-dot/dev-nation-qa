@@ -247,3 +247,53 @@ for (const route of ['/jobs', '/community', '/profile']) {
     expect(summary, summary.join('\n')).toEqual([]);
   });
 }
+
+for (const route of ['/jobs', '/community', '/profile']) {
+  test(`BUG-14: Header-logotyp ${route}`, async ({ page }) => {
+    await page.goto(`${BASE_URL}${route}`);
+    await page.waitForLoadState('domcontentloaded');
+    const logo = page.locator('header a:has(svg), header a:has(img), header [class*="logo" i]').first();
+    await expect(logo).toBeVisible();
+    const box = await logo.boundingBox();
+    expect(box && box.width > 0 && box.height > 0, `logotypen har kollapsade mått: ${JSON.stringify(box)}`).toBeTruthy();
+    const loaded = await logo.evaluate((el) => {
+      const img = el.matches('img') ? (el as HTMLImageElement) : el.querySelector('img');
+      if (img) return img.complete && img.naturalWidth > 0;
+      return !!(el.matches('svg') || el.querySelector('svg'));
+    });
+    expect(loaded, 'logotypen är varken SVG eller laddad img').toBeTruthy();
+
+    const visited: string[] = [];
+    page.on('framenavigated', (f) => { if (f === page.mainFrame()) visited.push(f.url()); });
+    const resp = page.waitForResponse((r) => r.request().isNavigationRequest(), { timeout: 15000 }).catch(() => null);
+    await logo.click();
+    const r = await resp;
+    await page.waitForLoadState('domcontentloaded');
+    if (r) expect(r.status(), `HTTP ${r.status()} efter logotypklick`).toBeLessThan(400);
+    expect(visited.length, `möjlig redirect-loop: ${visited.join(' -> ')}`).toBeLessThan(6);
+    await expect(page.getByText(/404|not found/i).first()).toHaveCount(0);
+    console.log(`BUG-14 ${route}: box=${JSON.stringify(box)} -> ${page.url()}`);
+  });
+}
+
+for (const route of ['/jobs', '/community']) {
+  test(`BUG-13: Prestanda ${route}`, async ({ page }) => {
+    let bytes = 0;
+    page.on('response', async (res) => {
+      const len = Number((await res.allHeaders())['content-length'] || 0);
+      bytes += len;
+    });
+    await page.goto(`${BASE_URL}${route}`, { waitUntil: 'load' });
+    await page.waitForLoadState('networkidle');
+    const m = await page.evaluate(() => {
+      const nav = performance.getEntriesByType('navigation')[0] as PerformanceNavigationTiming;
+      const transfer = performance.getEntriesByType('resource').reduce((s, r) => s + ((r as PerformanceResourceTiming).transferSize || 0), nav.transferSize || 0);
+      return { ttfb: nav.responseStart - nav.startTime, dcl: nav.domContentLoadedEventEnd - nav.startTime, transfer };
+    });
+    const mb = Math.max(m.transfer, bytes) / 1024 / 1024;
+    console.log(`PERF ${route}: TTFB=${m.ttfb.toFixed(0)}ms DCL=${m.dcl.toFixed(0)}ms payload=${mb.toFixed(2)}MB`);
+    expect.soft(m.ttfb, 'TTFB över 1500ms').toBeLessThan(1500);
+    expect.soft(m.dcl, 'domContentLoaded över 4000ms').toBeLessThan(4000);
+    expect.soft(mb, 'payload över 5MB').toBeLessThan(5);
+  });
+}
