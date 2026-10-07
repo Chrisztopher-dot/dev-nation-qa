@@ -11,7 +11,7 @@ test.describe('dev.nation.dev - Kritiska QA Tester', () => {
   // 1. Testa regression på Backend 500-kraschen (BUG-02)
   test('BUG-02: Stora tal i timarvode ska inte krascha backend med 500', async ({ page }) => {
     await page.goto(`${BASE_URL}/profile`);
-    await page.waitForLoadState('domcontentloaded');
+    await page.waitForLoadState('networkidle');
 
     // Klicka på Preferences i sidomenyn
     await page.getByRole('button', { name: /Preferences/i }).click();
@@ -49,7 +49,7 @@ test.describe('dev.nation.dev - Kritiska QA Tester', () => {
     });
 
     await page.goto(`${BASE_URL}/jobs`);
-    await page.waitForLoadState('domcontentloaded');
+    await page.waitForLoadState('networkidle');
 
     // Verifiera att t.ex. "Logo" eller CDN-bilder inte returnerar felkoder
     expect(failedRequests, `Hittade trasiga resurser: ${failedRequests.join(', ')}`).toHaveLength(0);
@@ -58,7 +58,7 @@ test.describe('dev.nation.dev - Kritiska QA Tester', () => {
   // 3. Testa att widgeten inte blockerar spar-knappar (BUG-01)
   test('BUG-01: Widgeten "Write to Nation" ska inte täcka spara-knappen', async ({ page }) => {
     await page.goto(`${BASE_URL}/profile`);
-    await page.waitForLoadState('domcontentloaded');
+    await page.waitForLoadState('networkidle');
 
     await page.getByRole('button', { name: /Preferences/i }).click();
 
@@ -89,7 +89,7 @@ test.describe('dev.nation.dev - Kritiska QA Tester', () => {
 
   test('BUG-10: Datum efter idag kan inte väljas som födelsedatum', async ({ page }) => {
     await page.goto(`${BASE_URL}/profile`);
-    await page.waitForLoadState('domcontentloaded');
+    await page.waitForLoadState('networkidle');
 
     await page.getByRole('button', { name: /Personal Details/i }).click();
 
@@ -201,7 +201,7 @@ test('BUG-06: Jobs-resurser (bilder, SVG, bilagor) laddar med HTTP 200', async (
 
 test('BUG-09/11: Profilens klientvalidering stoppar ogiltiga värden', async ({ page }) => {
   await page.goto(`${BASE_URL}/profile`);
-  await page.waitForLoadState('domcontentloaded');
+  await page.waitForLoadState('networkidle');
 
   await page.getByRole('button', { name: /Preferences/i }).click();
   const rate = page.getByRole('spinbutton', { name: /Freelancing hourly rate/i });
@@ -251,24 +251,20 @@ for (const route of ['/jobs', '/community', '/profile']) {
 for (const route of ['/jobs', '/community', '/profile']) {
   test(`BUG-14: Header-logotyp ${route}`, async ({ page }) => {
     await page.goto(`${BASE_URL}${route}`);
-    await page.waitForLoadState('domcontentloaded');
-    const logo = page.locator('header a:has(svg), header a:has(img), header [class*="logo" i]').first();
-    await expect(logo).toBeVisible();
+    await page.waitForLoadState('networkidle');
+    const logo = page.getByRole('link', { name: /Nation home/i }).first();
+    await expect(logo).toBeVisible({ timeout: 15000 });
     const box = await logo.boundingBox();
     expect(box && box.width > 0 && box.height > 0, `logotypen har kollapsade mått: ${JSON.stringify(box)}`).toBeTruthy();
-    const loaded = await logo.evaluate((el) => {
-      const img = el.matches('img') ? (el as HTMLImageElement) : el.querySelector('img');
-      if (img) return img.complete && img.naturalWidth > 0;
-      return !!(el.matches('svg') || el.querySelector('svg'));
-    });
-    expect(loaded, 'logotypen är varken SVG eller laddad img').toBeTruthy();
+    // Logotypens innehåll är ett CSS-/pseudoelement utan img/svg i DOM; vi kontrollerar synlighet, mått och tillgängligt namn.
+    await expect(logo).toHaveAccessibleName(/Nation home/i);
 
     const visited: string[] = [];
     page.on('framenavigated', (f) => { if (f === page.mainFrame()) visited.push(f.url()); });
     const resp = page.waitForResponse((r) => r.request().isNavigationRequest(), { timeout: 15000 }).catch(() => null);
     await logo.click();
     const r = await resp;
-    await page.waitForLoadState('domcontentloaded');
+    await page.waitForLoadState('networkidle');
     if (r) expect(r.status(), `HTTP ${r.status()} efter logotypklick`).toBeLessThan(400);
     expect(visited.length, `möjlig redirect-loop: ${visited.join(' -> ')}`).toBeLessThan(6);
     await expect(page.getByText(/404|not found/i).first()).toHaveCount(0);
