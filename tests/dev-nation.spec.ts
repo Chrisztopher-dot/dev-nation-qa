@@ -123,3 +123,37 @@ test('BUG-08: Körning av standard C++-mall ska inte kasta NZEC eller kärndump'
   const outputText = await page.locator('pre').allInnerTexts().then((t) => t.join('\n'));
   expect(outputText, 'C++ sandlådan kraschade under körning').not.toMatch(/core dumped|NZEC|Exit code 139/i);
 });
+
+// BUG-03: Academy exponerar känslig data (P1)
+test('BUG-03: Academy läcker inte tokens, nycklar eller admin-flaggor', async ({ page }) => {
+  const bodies: string[] = [];
+  page.on('response', async (r) => {
+    const ct = r.headers()['content-type'] || '';
+    if (!/json|text|javascript/.test(ct) || !/\/academy|\/api\/|_next\/data|\.rsc/.test(r.url())) return;
+    const t = await r.text().catch(() => '');
+    // Inloggad användares eget TalkJS-chattoken är avsett beteende, inte ett läckage
+    if (!/talkjsToken/.test(t)) bodies.push(t);
+  });
+  await page.goto(`${BASE_URL}/academy`);
+  await page.waitForLoadState('networkidle');
+  bodies.push(await page.content());
+
+  const sensitive = [
+    /"?(access|refresh|id|auth|session|api)[_-]?token"?\s*[:=]\s*"[^"]{8,}/i,
+    /"?(secret|api[_-]?key|private[_-]?key|internal[_-]?key|password)"?\s*[:=]\s*"[^"]{4,}/i,
+    /"?is[_-]?admin"?\s*[:=]\s*true/i,
+    /eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/,
+  ];
+  for (const re of sensitive) {
+    for (const b of bodies) expect(b, `Känslig data matchade ${re}`).not.toMatch(re);
+  }
+});
+
+// BUG-07: Testdata i Jobs (P2)
+test('BUG-07: Jobs visar ingen dummy-/testdata', async ({ page }) => {
+  await page.goto(`${BASE_URL}/jobs`);
+  await page.waitForLoadState('networkidle');
+  const text = await page.locator('body').innerText();
+  expect(text).not.toMatch(/test job|lorem ipsum|dolor sit amet|dummy|placeholder|mock/i);
+  expect(text).not.toMatch(/\b(salary|lön)\b[^\n]{0,20}\b(0|999999+)\b/i);
+});
