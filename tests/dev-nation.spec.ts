@@ -107,3 +107,19 @@ test.describe('dev.nation.dev - Kritiska QA Tester', () => {
   });
 
 });
+
+test('BUG-08: Körning av standard C++-mall ska inte kasta NZEC eller kärndump', async ({ page }) => {
+  // /freecode finns inte som egen sida; ett Freecode-test startas via /benchmarks och öppnas på /freecode/<n>
+  await page.goto(`${BASE_URL}/freecode/1`);
+  const runButton = page.getByRole('button', { name: /Run against the first \d+ test cases/i });
+  test.skip(!(await runButton.isVisible({ timeout: 10000 }).catch(() => false)), 'Inget aktivt Freecode-test (starta ett via /benchmarks)');
+  // Förväntat fel: standardmallen för C++ kraschar med NZEC/core dumped tills dev åtgärdat BUG-08. Ta bort test.fail() när det är fixat.
+  test.fail(true, 'BUG-08: default C++-mall kraschar med NZEC/core dumped');
+
+  await runButton.click();
+  const results = page.getByText(/Run results · \d+ of \d+ passed/);
+  await expect(results).toBeVisible({ timeout: 30000 });
+
+  const outputText = await page.locator('pre').allInnerTexts().then((t) => t.join('\n'));
+  expect(outputText, 'C++ sandlådan kraschade under körning').not.toMatch(/core dumped|NZEC|Exit code 139/i);
+});
