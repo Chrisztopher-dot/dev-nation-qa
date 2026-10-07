@@ -5,4 +5,5 @@ export default defineConfig({
   workers: 1,
   reporter: [['list'], ['html', { outputFolder: 'playwright-report', open: 'never' }]],
   outputDir: 'test-results',
+  use: { trace: 'retain-on-failure' },
 });
